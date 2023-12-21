@@ -214,7 +214,7 @@ class MyWindow(QWidget):
 
         # Set up the window
         self.setGeometry(100, 100, 500, 200)
-        self.setWindowTitle("PyQt Simple Interface")
+        self.setWindowTitle("Configuration")
         self.show()
 
     def on_submit_clicked(self):
