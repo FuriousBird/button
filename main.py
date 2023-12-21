@@ -54,59 +54,42 @@ def thread_func(event:threading.Event):
     ser.open()
 
     def parsemacro(string):
-        
         parsed = []
-        previous_escape = False
-        parse_buf=""
-        fact = 0
         i=0
+        buffer = ""
         while i<len(string):
             char = string[i]
-            hasnumparsed = False
-            isCharNormalAt = True
-            
-            if char == "@" and previous_escape==False and i+1<len(string):
-                isCharNormalAt = False
+            if i>0 and char=="@" and string[i-1]=="\\":
+                buffer = buffer[:-1]+"@"
+                i+=1
+                continue
+            if char=="@" and i+1<len(string):
                 if string[i+1]=="<":
                     fact = -1
                 elif string[i+1]==">":
                     fact = 1
-                numstring = ""
                 i+=2
-                run = True
-                while i<len(string) and run:
-                    numchar = string[i]
-                    if numchar.isnumeric():
-                        numstring+=numchar
+                #continue the loop in here
+                num_buffer = ""
+                while i<len(string):
+                    if (char:=string[i]).isnumeric():
+                        num_buffer += char
                         i+=1
-                    else:
-                        i+=1
-                        run=False
-                num = int(numstring) if len(numstring)>0 else 0
-                num *= fact
-                hasnumparsed = True
-
-            previous_escape = False
-            
-            if hasnumparsed:
-                #end of prev parsed string
-                parsed.append(parse_buf)
-                parse_buf = ""
+                        continue
+                    break
+                #if no num ignore @ signs
+                if not num_buffer:
+                    continue
+                parsed.append(buffer)
+                buffer = ""
+                num = int(num_buffer)*fact
                 parsed.append(num)
+                
                 continue
-            
-            if char == "@" and previous_escape==True:
-                parse_buf=parse_buf[:-1]+char
-            else:
-                parse_buf+=char
-
-            #prepare for next step
-            
-            if char == "\\":
-                previous_escape = True
+            buffer+=char
             i+=1
-        parsed.append(parse_buf)
-        print(string,parsed)
+        if buffer:
+            parsed.append(buffer)
         return parsed
 
     DELAY = .5 #seconds
