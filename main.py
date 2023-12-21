@@ -95,7 +95,7 @@ def thread_func(event:threading.Event):
                 parsed.append(num)
                 continue
             
-            if isCharNormalAt:
+            if char == "@" and previous_escape==True:
                 parse_buf=parse_buf[:-1]+char
             else:
                 parse_buf+=char
@@ -106,6 +106,7 @@ def thread_func(event:threading.Event):
                 previous_escape = True
             i+=1
         parsed.append(parse_buf)
+        print(string,parsed)
         return parsed
 
     DELAY = .5 #seconds
@@ -125,9 +126,17 @@ def thread_func(event:threading.Event):
         parsed_macro = parsemacro(macro)
         dat = None
         try:
+            if ser.closed:
+                raise ValueError
             dat = ser.readline().strip().decode("ASCII")
         except:
-            print("reading serial error")
+            print("couldn't find serial, retrying in 5sec")
+            time.sleep(5)
+            ser.close()
+            try:
+                ser.open()
+            except:
+                ser.close()
             continue
         
         #THERE IS AN ISSUE WITH THE 
