@@ -1,30 +1,47 @@
-""" lock = Lock()
-is_open = False
-
-def on_tray_icon_click(reason):
-    if reason == QSystemTrayIcon.Trigger:
-        print("Tray icon clicked!")
-
-def open_menu():
-    global is_open
-    lock.acquire()
-    if is_open:
-        lock.release()
-        return
-    is_open = True
-    lock.release()
-    print("hello")
-    window = MyWindow()
-    #do some stuff
-     """
-    
-
 import sys,os,time
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QTextEdit, QPushButton, QSystemTrayIcon, QMenu, QHBoxLayout, QAction
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QTextEdit, QPushButton, QSystemTrayIcon, QMenu, QHBoxLayout, QTabWidget, QCheckBox
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QCursor
+from tmp import macro_parser
 
+import serial.tools.list_ports
 
+GLOBAL_COMPORTS = []
+GLOBAL_COMPORT_NAMES = []
+
+def filter_COMS(COMLIST):
+    VID=6790
+    RETURNPORTS = []
+    for device in COMLIST:
+        if (device.vid != None):
+            print(device.vid)
+            if (device.vid == VID):
+                port = device.device
+                print("Detected Possible COMPORT:",port)
+                RETURNPORTS.append(device)
+                continue
+            port = None
+    return RETURNPORTS
+
+def update_COM():
+    global GLOBAL_COMPORTS, GLOBAL_COMPORT_NAMES
+    RETURN_COMS = list(serial.tools.list_ports.comports())
+    GLOBAL_COMPORTS = filter_COMS(RETURN_COMS)
+    GLOBAL_COMPORT_NAMES = [getattr(dev, "device", None) for dev in GLOBAL_COMPORTS]
+    
+update_COM()
+
+GLOBAL_DEFAULTCOM = None
+DEFAULTCOM_FILE = "defaultcom.txt"
+if os.path.exists(DEFAULTCOM_FILE):
+    with open(DEFAULTCOM_FILE, "r") as file:
+        GLOBAL_DEFAULTCOM = file.read().strip()
+        print("Found Default COM PORT")
+else:
+    print("Default COM PORT not set")
+if GLOBAL_DEFAULTCOM not in GLOBAL_COMPORT_NAMES:
+    print("Warning: Default COM not present, ignoring defaults")
+    GLOBAL_DEFAULTCOM=None #don't try default port if it is not present
 
 import threading
 
@@ -35,13 +52,15 @@ MACRO_FILE_EXISTS = False
 
 MACRO_SAVE_FILE = "macro.txt"
 if os.path.exists(MACRO_SAVE_FILE):
+    print("Using saved Macro")
     MACRO_FILE_EXISTS = True
     with open(MACRO_SAVE_FILE, "rb") as file:
         GLOBAL_MACRO=file.read().decode("UTF-8")
-
-
+else:
+    print("Using software default Macro")
 
 def thread_func(event:threading.Event):
+    print("Serial Thread started")
     global GLOBAL_MACRO
     from pynput.keyboard import Key, Controller
     import time, serial
@@ -53,60 +72,20 @@ def thread_func(event:threading.Event):
     ser.port = "/dev/ttyUSB0"
     ser.open()
 
-    def parsemacro(string):
-        parsed = []
-        i=0
-        buffer = ""
-        while i<len(string):
-            char = string[i]
-            if i>0 and char=="@" and string[i-1]=="\\":
-                buffer = buffer[:-1]+"@"
-                i+=1
-                continue
-            if char=="@" and i+1<len(string):
-                if string[i+1]=="<":
-                    fact = -1
-                elif string[i+1]==">":
-                    fact = 1
-                i+=2
-                #continue the loop in here
-                num_buffer = ""
-                while i<len(string):
-                    if (char:=string[i]).isnumeric():
-                        num_buffer += char
-                        i+=1
-                        continue
-                    break
-                #if no num ignore @ signs
-                if not num_buffer:
-                    continue
-                parsed.append(buffer)
-                buffer = ""
-                num = int(num_buffer)*fact
-                parsed.append(num)
-                
-                continue
-            buffer+=char
-            i+=1
-        if buffer:
-            parsed.append(buffer)
-        return parsed
-
     DELAY = .5 #seconds
 
     prev = None
     while ser.isOpen():
         
-        LOCK.acquire() ########### acquire
+         
         if event.is_set():
-            LOCK.release() ########### release 1
-            print("Closed The Thread")
+            print("Closing Thread...")
             break
 
-
-        macro = GLOBAL_MACRO
-        LOCK.release() ########### release 2
-        parsed_macro = parsemacro(macro)
+        LOCK.acquire() ###########
+        macro = GLOBAL_MACRO     
+        LOCK.release() ###########
+        parsed_macro = macro_parser(macro)
         dat = None
         try:
             if ser.closed:
@@ -142,8 +121,9 @@ def thread_func(event:threading.Event):
                             keyboard.tap(Key.right)
                     continue
                 keyboard.type(item)
+    print("Closing Serial...")
     ser.close()
-
+    print("Thread Exited!")
 #main thread
 stop_event = threading.Event()
 proc = threading.Thread(target=thread_func, args=(stop_event,))
@@ -166,7 +146,12 @@ class MyWindow(QWidget):
 
         # Create a vertical layout for the left side (input box and submit button)
         left_layout = QVBoxLayout()
+        tabs = QTabWidget()
+        tabs.setDisabled(True)
 
+        macro_tab = self.macroTabUI()
+
+        tabs.addTab(macro_tab, "Macro Mode")
         # Create input box
         
         self.input_box = QTextEdit(self)
@@ -181,9 +166,13 @@ class MyWindow(QWidget):
         self.submit_button = QPushButton("💾 save", self)
         self.submit_button.clicked.connect(self.on_submit_clicked)
 
-        # Add widgets to the left layout
-        left_layout.addWidget(self.input_box)
-        left_layout.addWidget(self.submit_button)
+        # Add widgets to the macro tab
+        macro_tab.layout().addWidget(self.input_box)
+        macro_tab.layout().addWidget(self.submit_button)
+
+        tabs.addTab(self.scriptTabUI(), "Script Mode")
+
+        left_layout.addWidget(tabs)
 
         # Create a vertical spacer to push widgets to the top
         left_layout.addStretch(1)
@@ -208,6 +197,39 @@ class MyWindow(QWidget):
         self.setGeometry(100, 100, 500, 200)
         self.setWindowTitle("Configuration")
         self.show()
+    
+    def scriptTabUI(self):
+
+        """Create the General page UI."""
+
+        generalTab = QWidget()
+
+        layout = QVBoxLayout()
+
+        layout.addWidget(QCheckBox("Not Ready"))
+
+        layout.addWidget(QCheckBox("WIP"))
+
+        generalTab.setLayout(layout)
+
+        return generalTab
+
+
+    def macroTabUI(self):
+
+        """Create the Network page UI."""
+
+        networkTab = QWidget()
+
+        layout = QVBoxLayout()
+
+        layout.addWidget(QCheckBox("BracketAutoCloseFix"))
+
+        layout.addWidget(QCheckBox("Enabled"))
+
+        networkTab.setLayout(layout)
+
+        return networkTab
 
     def on_submit_clicked(self):
         global GLOBAL_MACRO

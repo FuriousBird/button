@@ -37,13 +37,14 @@ def macro_parser(string):
         parsed.append(buffer)
     return parsed
 
-tests = [
-    "Hello !@<1World",
-    "Hello World!@<",
-    "Hello World!\@<4",
-    "\@Hello World!",
-    "@<Hello World!"
-]
+if __name__=="__main__":
+    tests = [
+        "Hello !@<1World",
+        "Hello World!@<",
+        "Hello World!\@<4",
+        "\@Hello World!",
+        "@<Hello World!"
+    ]
 
-for test in tests:
-    print(parser(test))
+    for test in tests:
+        print(parser(test))
