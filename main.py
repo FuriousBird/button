@@ -8,6 +8,7 @@ import serial.tools.list_ports
 
 GLOBAL_COMPORTS = []
 GLOBAL_COMPORT_NAMES = []
+GLOBAL_CURRENT_MODE = 0
 
 def filter_COMS(COMLIST):
     VID=6790
@@ -61,18 +62,20 @@ if os.path.exists(MACRO_SAVE_FILE):
 else:
     print("Using software default Macro")
 
+GLOBAL_HOLD_KEY = " "
+
 def thread_func(event:threading.Event):
     print("Serial Thread started")
-    global GLOBAL_MACRO, TARGET_PORT
+    global GLOBAL_MACRO, TARGET_PORT, GLOBAL_CURRENT_MODE, GLOBAL_HOLD_KEY
     from pynput.keyboard import Key, Controller
     import time, serial
     
-    ser=serial.Serial(timeout=0.5)
+    ser=serial.Serial(timeout=0.01) #WARNING: THIS TIMEOUT SHOULD BE LOW FOR LOWER LATENCY
     ser.braudrate = 9600
 
     keyboard = Controller()
 
-    DELAY = 0.5 #seconds per click
+    DELAY = 0.05 #seconds per click
 
     run = True
     while run:
@@ -84,12 +87,14 @@ def thread_func(event:threading.Event):
         #try to connect to target_port
         LOCK.acquire()
         TARGET = TARGET_PORT
+        LOCK.release()
         if TARGET is not None:
             print("Target COM received by thread.")
             if not ser.closed:
                 print("Warning: Closing previous port (if forgotten).")
                 ser.close()
             ser.port = TARGET_PORT
+            LOCK.acquire()
             TARGET_PORT = None
             LOCK.release()
             try:
@@ -101,18 +106,19 @@ def thread_func(event:threading.Event):
                 time.sleep(5)
             #we're safe: enter main loop
             prev=None #timer
+            prevHeld = None
             while ser.isOpen():
                 LOCK.acquire() ###########
                 macro = GLOBAL_MACRO
                 TARGET = TARGET_PORT
+                mode = GLOBAL_CURRENT_MODE
                 LOCK.release() ###########
+
                 if TARGET_PORT is not None:
                     print("New target during normal execution, switching serial...")
-                    #we got neww target, close serial and exit to allow reconnexion
+                    #we got new target, close serial and exit to allow reconnexion
                     ser.close()
                     break
-
-                parsed_macro = macro_parser(macro)
 
                 if event.is_set():
                     print("Thread Exit received during normal function")
@@ -127,23 +133,41 @@ def thread_func(event:threading.Event):
                 
                 if not dat:
                     continue
-                now = time.perf_counter()
-                if prev is not None:
-                    dt = now-prev
-                    if dt<DELAY:
-                        continue
-                prev = now
-                if dat == "bruh":
-                    for item in parsed_macro:
-                        if isinstance(item, int):
-                            if item<0:
-                                for i in range(-item):
-                                    keyboard.tap(Key.left)
-                            if item>0:
-                                for i in range(item):
-                                    keyboard.tap(Key.right)
+                
+                if dat == "hold":
+                    BEING_HELD = True
+                if dat == "rels":
+                    BEING_HELD = False
+
+                if mode==0:
+                    parsed_macro = macro_parser(macro)
+                    now = time.perf_counter()
+                    if prev is not None:
+                        dt = now-prev
+                        if dt<DELAY:
                             continue
-                        keyboard.type(item)
+                    prev = now
+                    if dat == "hold":
+                        for item in parsed_macro:
+                            if isinstance(item, int):
+                                if item<0:
+                                    for i in range(-item):
+                                        keyboard.tap(Key.left)
+                                if item>0:
+                                    for i in range(item):
+                                        keyboard.tap(Key.right)
+                                continue
+                            keyboard.type(item)
+                if mode==1:
+                    if prevHeld is None or prevHeld != BEING_HELD:
+                        prevHeld = BEING_HELD
+                    if BEING_HELD:
+                        keyboard.press(GLOBAL_HOLD_KEY)
+                        print("pressing")
+                    else:
+                        keyboard.release(GLOBAL_HOLD_KEY)
+                        print("releasing")
+                    
     if not ser.closed:
         print("Closing Serial...")
         ser.close()
@@ -157,15 +181,22 @@ proc = threading.Thread(target=thread_func, args=(stop_event,))
 proc.start()
 
 class MyWindow(QWidget):
+    MACRO_MODE = 0
+    HOLD_MODE = 1
+    SCRIPT_MODE = 2
     def __init__(self, app):
+        global GLOBAL_HOLD_KEY
         super().__init__()
         self.qapp = app
         self.init_ui()
+        self.HOLD_KEY = GLOBAL_HOLD_KEY
     def closeEvent(self, event):
         # Reimplementing the close event to hide the window instead of closing the app
         event.ignore()
         self.hide()
-
+    def tab_change(self, tabindex):
+        print("changing tab... (log only)")
+        
     def init_ui(self):
         global MACRO_FILE_EXISTS, GLOBAL_MACRO
         # Set up the main layout
@@ -190,13 +221,16 @@ class MyWindow(QWidget):
 
         # Create submit button
         self.submit_button = QPushButton("💾 save", self)
-        self.submit_button.clicked.connect(self.on_submit_clicked)
+        self.submit_button.clicked.connect(self.on_macro_submit_clicked)
 
         # Add widgets to the macro tab
         macro_tab.layout().addWidget(self.input_box)
         macro_tab.layout().addWidget(self.submit_button)
 
+        self.tabs.addTab(self.holdTabUi(), "Hold Mode")
         self.tabs.addTab(self.scriptTabUI(), "Script Mode")
+
+        self.tabs.currentChanged.connect(self.tab_change)
 
         left_layout.addWidget(self.tabs)
 
@@ -275,6 +309,33 @@ class MyWindow(QWidget):
         self.setGeometry(100, 100, 500, 200)
         self.setWindowTitle("Configuration")
         self.show()
+
+    def holdTabUi(self):
+
+        """Create the Hold page UI."""
+
+        holdTab = QWidget()
+
+        layout = QVBoxLayout()
+
+        self.holdkey_list_widget = QComboBox()
+        for char in "abcdefghijklmnopqrstuvwxyz ":
+            self.holdkey_list_widget.addItem(char)
+        self.holdkey_list_widget.currentTextChanged.connect(self.change_hold_key)
+
+        self.holdkey_submit_button = QPushButton("💾 save", self)
+        self.holdkey_submit_button.clicked.connect(self.on_hold_submit_clicked)
+
+        layout.addWidget(self.holdkey_list_widget)
+        layout.addWidget(self.holdkey_submit_button)
+
+        holdTab.setLayout(layout)
+
+        return holdTab
+
+    def change_hold_key(self, x):
+        print(x)
+        self.HOLD_KEY = x
     
     def scriptTabUI(self):
 
@@ -284,11 +345,12 @@ class MyWindow(QWidget):
 
         layout = QVBoxLayout()
 
-        layout.addWidget(QLabel("Pas encore dispo."))
 
         """ layout.addWidget(QCheckBox("Not Ready"))
 
         layout.addWidget(QCheckBox("WIP")) """
+
+        layout.addWidget(QLabel("Pas encore dispo."))
 
         generalTab.setLayout(layout)
 
@@ -310,17 +372,27 @@ class MyWindow(QWidget):
 
         return networkTab
 
-    def on_submit_clicked(self):
-        global GLOBAL_MACRO
+    def on_macro_submit_clicked(self):
+        global GLOBAL_MACRO, GLOBAL_CURRENT_MODE
 # do lengthy process
         # Get text from input box and display it in the label
         
         input_text = self.input_box.toPlainText()
         LOCK.acquire()
         GLOBAL_MACRO = input_text
+        GLOBAL_CURRENT_MODE = 0
         LOCK.release()
         with open(MACRO_SAVE_FILE, "wb") as file:
             file.write(input_text.encode("UTF-8"))
+        print("Submit Macro Done")
+
+    def on_hold_submit_clicked(self):
+        global GLOBAL_CURRENT_MODE,GLOBAL_HOLD_KEY
+        LOCK.acquire()
+        GLOBAL_HOLD_KEY = self.HOLD_KEY
+        GLOBAL_CURRENT_MODE = 1
+        LOCK.release()
+        print("Submit Hold Done")
 
 class SystemTrayApp(QApplication):
     def __init__(self, *args, **kwargs):
